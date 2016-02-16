@@ -37,6 +37,7 @@ import fedimg
 import fedimg.messenger
 from fedimg.util import get_file_arch
 from fedimg.util import region_to_driver, ssh_connection_works
+from fedimg.util import run_system_command, check_if_volume_exists
 
 
 class EC2ServiceException(Exception):
@@ -714,3 +715,63 @@ class EC2Service(object):
                                          compose=compose_meta)
 
             return 0
+
+
+    def _download_image(self, image_url):
+        """
+        Downloads the raw image for the image to be uploaded to all the regions.
+
+        :param image_url: URL of the image
+        :type image_url: ``str``
+        """
+        command = "curl -L {image_url}".format(image_url=image_url)
+        out, err = system(command)
+
+        return out, err
+
+
+    def _import_image_volume(self, image_name, image_format, region, bucket_name,
+                             availability_zone):
+        """
+        Executes the command ``euca-import-volume`` and imports a volume in AWS
+
+        :param image_name: Name of the image
+        :type image_name: ``str``
+
+        :param region: Region
+        :type region: ``str``
+
+        :param bucket_name: Name of the bucket
+        :type bucket_name: ``str``
+
+        :param availability_zone: Availability Zone
+        :type availability_zone: ``str``
+        """
+        params = {
+            'image_name': image_name,
+            'image_format': image_format,
+            'region': region,
+            'bucket_name': bucket_name,
+            'availability_zone': availability_zone,
+        }
+        cmd = 'euca-import-volume {image_name} -f {image_format} --region \
+               {region} -b {bucket_name} -z {availability_zone}'.format(**params)
+
+        out, err = run_system_command(cmd)
+
+    def _check_volume_exists(self, volume_id, region):
+        """
+        Checks if the volume has been created.
+
+        Apache libcloud pulls in all the volumes and does not have an option to
+        query a single volume by it's volume id.
+
+        So, the plan is to use boto in here to do the query
+
+        :param volume_id: Id of the Volume
+        :type volume_id: ``str``
+
+        :param region: Region of the volume
+        :type region: ``str``
+        """
+        return check_if_volume_exists(volume_id)

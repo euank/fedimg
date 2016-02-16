@@ -101,3 +101,38 @@ def safeget(dct, *keys):
         except KeyError:
             return None
     return dct
+
+
+def run_system_command(cmd):
+    """
+    Invoke a shell command. Primary replacement for os.system calls.
+
+    :param cmd: The shell command to execute
+    :type cmd: ``str``
+    """
+    ret = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
+    out, err = ret.communicate()
+    return out, err
+
+
+def check_if_volume_exists(volume_id, region):
+    """
+    Check the volume for the corresponding ``volume_id`` exists
+
+    :param volume_id: ID of the volume
+    :type volume_id: ``str``
+
+    :param region: Region of the volume
+    :type region: ``str``
+    """
+
+    conn = boto.ec2.connect_to_region(region,
+                                      aws_access_key_id=fedimg.AWS_ACCESS_ID,
+                                      aws_secret_access_key=fedimg.AWS_SECRET_KEY)
+
+    try:
+        volume = conn.get_all_volumes(volume_ids=[volume_id])
+        return True
+    except EC2ResponseError:
+        return False
