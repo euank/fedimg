@@ -759,6 +759,27 @@ class EC2Service(object):
 
         out, err = run_system_command(cmd)
 
+
+    def _describe_conversion_tasks(self, task_id, region):
+        """
+        Executes the command ``euca-describe-conversion-tasks`` and checks if
+        the task has been completed.
+
+        :param task_id: Task id
+        :type task_id: ``str``
+
+        :param region: Region
+        :type region: ``str``
+        """
+        params = {
+            'task_id': task_id,
+            'region': region
+        }
+        cmd = 'euca-describe-conversion-tasks {task_id}\
+               --region {region}'.format(**parmams)
+
+        out, err = run_system_command(cmd)
+
     def _check_volume_exists(self, volume_id, region):
         """
         Checks if the volume has been created.
