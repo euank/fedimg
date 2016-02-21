@@ -183,16 +183,6 @@ class EC2Service(object):
             cls = ami['driver']
             driver = cls(fedimg.AWS_ACCESS_ID, fedimg.AWS_SECRET_KEY)
 
-            # select the desired node attributes
-            sizes = driver.list_sizes()
-            reg_size_id = 'm1.xlarge'
-
-            # check to make sure we have access to that size node
-            # TODO: Add try/except if for some reason the size isn't
-            # available?
-            size = [s for s in sizes if s.id == reg_size_id][0]
-            base_image = NodeImage(id=ami['ami'], name=None, driver=driver)
-
             # Name the utility node
             name = 'Fedimg AMI builder'
 
@@ -205,137 +195,12 @@ class EC2Service(object):
                                  'DeleteOnTermination': 'false'},
                          'DeviceName': '/dev/sdb'}]
 
-            # Read in the SSH key
-            with open(fedimg.AWS_PUBKEYPATH, 'rb') as f:
-                key_content = f.read()
-
-            # Add key to authorized keys for root user
-            step_1 = SSHKeyDeployment(key_content)
-
-            # Add script for deployment
-            # Device becomes /dev/xvdb on instance
-            script = "touch test"  # this isn't so important for the util inst.
-            step_2 = ScriptDeployment(script)
-
-            # Create deployment object (will set up SSH key and run script)
-            msd = MultiStepDeployment([step_1, step_2])
-
-            log.info('Deploying utility instance')
-
-            while True:
-                try:
-                    self.util_node = driver.deploy_node(
-                        name=name,
-                        image=base_image,
-                        size=size,
-                        ssh_username=fedimg.AWS_UTIL_USER,
-                        ssh_alternate_usernames=[''],
-                        ssh_key=fedimg.AWS_KEYPATH,
-                        deploy=msd,
-                        kernel_id=ami['aki'],
-                        ex_metadata={'build':
-                                     self.build_name},
-                        ex_keyname=fedimg.AWS_KEYNAME,
-                        ex_security_groups=['ssh'],
-                        ex_ebs_optimized=True,
-                        ex_blockdevicemappings=mappings)
-
-                except KeyPairDoesNotExistError:
-                    # The keypair is missing from the current region.
-                    # Let's install it and try again.
-                    log.exception('Adding missing keypair to region')
-                    driver.ex_import_keypair(fedimg.AWS_KEYNAME,
-                                             fedimg.AWS_PUBKEYPATH)
-                    continue
-
-                except Exception as e:
-                    # We might have an invalid security group, aka the 'ssh'
-                    # security group doesn't exist in the current region. The
-                    # reason this is caught here is because the related
-                    # exception that prints`InvalidGroup.NotFound is, for
-                    # some reason, a base exception.
-                    if 'InvalidGroup.NotFound' in e.message:
-                        log.exception('Adding missing security'
-                                      'group to region')
-                        # Create the ssh security group
-                        driver.ex_create_security_group('ssh', 'ssh only')
-                        driver.ex_authorize_security_group('ssh', '22', '22',
-                                                           '0.0.0.0/0')
-                        continue
-                    else:
-                        raise
-                break
-
-            # Wait until the utility node has SSH running
-            while not ssh_connection_works(fedimg.AWS_UTIL_USER,
-                                           self.util_node.public_ips[0],
-                                           fedimg.AWS_KEYPATH):
-                sleep(10)
-
-            log.info('Utility node started with SSH running')
-
-            # Connect to the utility node via SSH
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(self.util_node.public_ips[0],
-                           username=fedimg.AWS_UTIL_USER,
-                           key_filename=fedimg.AWS_KEYPATH)
-
-            # Curl the .raw.xz file down from the web, decompressing it
-            # and writing it to the secondary volume defined earlier by
-            # the block device mapping.
-            # curl with -L option, so we follow redirects
-            cmd = "sudo sh -c 'curl -L {0} | xzcat > /dev/xvdb'".format(
-                  self.raw_url)
-            chan = client.get_transport().open_session()
-            chan.get_pty()  # Request a pseudo-term to get around requiretty
-
-            log.info('Executing utility script')
-
-            # Run the above command and wait for its exit status
-            chan.exec_command(cmd)
-            status = chan.recv_exit_status()
-            if status != 0:
-                # There was a problem with the SSH command
-                log.error('Problem writing volume with utility instance')
-
-                data = "(no data)"
-                if chan.recv_ready():
-                    data = chan.recv(1024 * 32)
-
-                fedimg.messenger.message('image.upload', self.raw_url,
-                                         self.destination, 'failed',
-                                         extra={'data': data},
-                                         compose=compose_meta)
-
-                raise EC2UtilityException(
-                    "Problem writing image to utility instance volume. "
-                    "Command exited with status {0}.\n"
-                    "command: {1}\n"
-                    "output: {2}".format(status, cmd, data))
-
-            client.close()
-
             # Get volume name that image was written to
             vol_id = [x['ebs']['volume_id'] for x in
                       self.util_node.extra['block_device_mapping'] if
                       x['device_name'] == '/dev/sdb'][0]
 
             log.info('Destroying utility node')
-
-            # Terminate the utility instance
-            driver.destroy_node(self.util_node)
-
-            # Wait for utility node to be terminated
-            while ssh_connection_works(fedimg.AWS_UTIL_USER,
-                                       self.util_node.public_ips[0],
-                                       fedimg.AWS_KEYPATH):
-                sleep(10)
-
-            # Wait a little longer since loss of SSH connectivity doesn't mean
-            # that the node's destroyed
-            # TODO: Check instance state rather than this lame sleep thing
-            sleep(45)
 
             # Take a snapshot of the volume the image was written to
             self.util_volume = [v for v in driver.list_volumes()
@@ -363,7 +228,7 @@ class EC2Service(object):
 
             # Delete the volume now that we've got the snapshot
             driver.destroy_volume(self.util_volume)
-            # make sure Fedimg knows that the vol is gone
+            # Make sure Fedimg knows that the vol is gone
             self.util_volume = None
 
             log.info('Destroyed volume')
@@ -779,6 +644,43 @@ class EC2Service(object):
                --region {region}'.format(**parmams)
 
         out, err = run_system_command(cmd)
+
+        if 'completed' in out:
+            match = re.search('\s(vol-\w{8})', out)
+            volume_id = match.group(1)
+            return True, volume_id
+        else:
+            return False, ''
+
+
+    def create_snapshot(self, volume_id):
+        """
+        Create the snapshot out of the volume created
+        """
+        SNAPSHOT_NAME = 'fedimg-snap-{build_name}'.format(
+            build_name=self.build_name)
+
+        log.info('Taking a snapshot of the written volume')
+
+        self.snapshot = driver.create_volume_snapshot(volume, name=snap_name)
+
+
+    def _check_snapshot_exists(self, snapshot_id):
+        """
+        Check if the snapshot has been created.
+
+        :param snapshot_id: Id of the snapshot
+        :type snapshot_id: ``str``
+        """
+        if self.snapshot.extra['state'] != 'completed':
+            self.snapshot = [snapshot for snapshot in self.driver.list_snapshots()
+                             if snapshot.id == snapshot_id][0]
+            log.info('Snapshot Taken')
+
+            return True
+        else:
+            return False
+
 
     def _check_volume_exists(self, volume_id, region):
         """
