@@ -38,6 +38,7 @@ import fedimg.messenger
 from fedimg.util import get_file_arch
 from fedimg.util import region_to_driver, ssh_connection_works
 from fedimg.util import run_system_command, check_if_volume_exists
+from fedimg.util import retry_if_result_false
 
 
 class EC2ServiceException(Exception):
@@ -665,6 +666,7 @@ class EC2Service(object):
         self.snapshot = driver.create_volume_snapshot(volume, name=snap_name)
 
 
+    @retry(retry_on_result=retry_if_result_false, wait_fixed=10000)
     def _check_snapshot_exists(self, snapshot_id):
         """
         Check if the snapshot has been created.

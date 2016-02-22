@@ -115,7 +115,6 @@ def run_system_command(cmd):
     out, err = ret.communicate()
     return out, err
 
-
 def check_if_volume_exists(volume_id, region):
     """
     Check the volume for the corresponding ``volume_id`` exists
@@ -136,3 +135,9 @@ def check_if_volume_exists(volume_id, region):
         return True
     except EC2ResponseError:
         return False
+
+def retry_if_result_false(result):
+    """
+    Return True if we should retry if the result if False
+    """
+    return result is False
