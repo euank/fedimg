@@ -173,6 +173,8 @@ class EC2Service(object):
 
         # Get a starting utility AMI in some region to use as an origin
         ami = self.util_amis[0]  # Select the starting AMI to begin
+        region = ami['region']
+
         self.destination = 'EC2 ({region})'.format(region=ami['region'])
 
         fedimg.messenger.message('image.upload', self.raw_url,
@@ -182,43 +184,27 @@ class EC2Service(object):
         try:
             # Connect to the region through the appropriate libcloud driver
             cls = ami['driver']
-            driver = cls(fedimg.AWS_ACCESS_ID, fedimg.AWS_SECRET_KEY)
+            self.driver = cls(fedimg.AWS_ACCESS_ID, fedimg.AWS_SECRET_KEY)
 
             # Name the utility node
             name = 'Fedimg AMI builder'
 
-            # Block device mapping for the utility node
-            # (Requires this second volume to write the image to for
-            # future registration.)
-            mappings = [{'VirtualName': None,  # cannot specify with Ebs
-                         'Ebs': {'VolumeSize': fedimg.AWS_UTIL_VOL_SIZE,
-                                 'VolumeType': self.vol_type,
-                                 'DeleteOnTermination': 'false'},
-                         'DeviceName': '/dev/sdb'}]
+            log.info('Start downloading the image')
+            out, err = self._download_image(self.raw_url)
 
-            # Get volume name that image was written to
-            vol_id = [x['ebs']['volume_id'] for x in
-                      self.util_node.extra['block_device_mapping'] if
-                      x['device_name'] == '/dev/sdb'][0]
+            bucket_name = 'fedora-test-{region}'.format(region=region)
+            availability_zone = self._get_availability_zone()
 
-            log.info('Destroying utility node')
+            params = {
+                'image_name': self.file_name,
+                'image_format': 'raw',
+                'region': region,
+                'bucket_name': bucket_name,
+                'availability_zone': availability_zone.name,
+            }
+            out, err = self._import_image_volume(**params)
 
-            # Take a snapshot of the volume the image was written to
-            self.util_volume = [v for v in driver.list_volumes()
-                                if v.id == vol_id][0]
-            snap_name = 'fedimg-snap-{0}'.format(self.build_name)
-
-            log.info('Taking a snapshot of the written volume')
-
-            self.snapshot = driver.create_volume_snapshot(self.util_volume,
-                                                          name=snap_name)
-            snap_id = str(self.snapshot.id)
-
-            while self.snapshot.extra['state'] != 'completed':
-                # Re-obtain snapshot object to get updates on its state
-                self.snapshot = [s for s in driver.list_snapshots()
-                                 if s.id == snap_id][0]
-                sleep(10)
+            volume_id = self._describe_conversion_tasks(task_id, region)
 
             # Make the snapshot public, so that the AMIs can be copied
             driver.ex_modify_snapshot_attribute(self.snapshot, {
@@ -228,7 +214,8 @@ class EC2Service(object):
             log.info('Snapshot taken')
 
             # Delete the volume now that we've got the snapshot
-            driver.destroy_volume(self.util_volume)
+            self.driver.destroy_volume(self.util_volume)
+
             # Make sure Fedimg knows that the vol is gone
             self.util_volume = None
 
@@ -274,7 +261,7 @@ class EC2Service(object):
                         # Re-add trailing dup number with new count
                         image_name += '-{0}'.format(self.dup_count)
                     # Try to register with that name
-                    self.images.append(driver.ex_register_image(
+                    self.images.append(self.driver.ex_register_image(
                         image_name,
                         description=self.image_desc,
                         root_device_name=reg_root_device_name,
@@ -333,7 +320,7 @@ class EC2Service(object):
 
             # Actually deploy the test instance
             try:
-                self.test_node = driver.deploy_node(
+                self.test_node = self.driver.deploy_node(
                     name=name, image=self.images[0], size=size,
                     ssh_username=fedimg.AWS_TEST_USER,
                     ssh_alternate_usernames=['root'],
@@ -415,32 +402,32 @@ class EC2Service(object):
             log.info('Destroying test node')
 
             # Destroy the test node
-            driver.destroy_node(self.test_node)
+            self.driver.destroy_node(self.test_node)
 
             # Make AMIs public
             for image in self.images:
-                driver.ex_modify_image_attribute(
+                self.driver.ex_modify_image_attribute(
                     image,
                     {'LaunchPermission.Add.1.Group': 'all'})
 
         except EC2UtilityException as e:
             log.exception("Failure")
             if fedimg.CLEAN_UP_ON_FAILURE:
-                self._clean_up(driver,
+                self._clean_up(self.driver,
                                delete_images=fedimg.DELETE_IMAGES_ON_FAILURE)
             return 1
 
         except EC2AMITestException as e:
             log.exception("Failure")
             if fedimg.CLEAN_UP_ON_FAILURE:
-                self._clean_up(driver,
+                self._clean_up(self.driver,
                                delete_images=fedimg.DELETE_IMAGES_ON_FAILURE)
             return 1
 
         except DeploymentException as e:
             log.exception("Problem deploying node: {0}".format(e.value))
             if fedimg.CLEAN_UP_ON_FAILURE:
-                self._clean_up(driver,
+                self._clean_up(self.driver,
                                delete_images=fedimg.DELETE_IMAGES_ON_FAILURE)
             return 1
 
@@ -448,12 +435,12 @@ class EC2Service(object):
             # Just give a general failure message.
             log.exception("Unexpected exception")
             if fedimg.CLEAN_UP_ON_FAILURE:
-                self._clean_up(driver,
+                self._clean_up(self.driver,
                                delete_images=fedimg.DELETE_IMAGES_ON_FAILURE)
             return 1
 
         else:
-            self._clean_up(driver)
+            self._clean_up(self.driver)
 
         if self.test_success:
             # Copy the AMI to every other region if tests passed
@@ -583,6 +570,18 @@ class EC2Service(object):
             return 0
 
 
+    def _get_availability_zone(self, region=None):
+        """
+        Returns a availability zone for the region
+
+        :param region: Region (optional)
+        :type region: ``str``
+        """
+        availabilty_zone = self.driver.ex_list_availability_zone(only_available=True)
+
+        return availabilty_zone[0]
+
+
     def _download_image(self, image_url):
         """
         Downloads the raw image for the image to be uploaded to all the regions.
@@ -590,14 +589,14 @@ class EC2Service(object):
         :param image_url: URL of the image
         :type image_url: ``str``
         """
-        command = "curl -L {image_url}".format(image_url=image_url)
-        out, err = system(command)
+        cmd = "curl -L {image_url}".format(image_url=image_url)
+        out, err = run_system_command(cmd)
 
         return out, err
 
 
     def _import_image_volume(self, image_name, image_format, region, bucket_name,
-                             availability_zone):
+                             availability_zone, volume_type, volume_size):
         """
         Executes the command ``euca-import-volume`` and imports a volume in AWS
 
@@ -626,6 +625,7 @@ class EC2Service(object):
         out, err = run_system_command(cmd)
 
 
+    @retry(retry_on_result=retry_if_result_false, wait_fixed=5000)
     def _describe_conversion_tasks(self, task_id, region):
         """
         Executes the command ``euca-describe-conversion-tasks`` and checks if
@@ -649,21 +649,28 @@ class EC2Service(object):
         if 'completed' in out:
             match = re.search('\s(vol-\w{8})', out)
             volume_id = match.group(1)
-            return True, volume_id
+            return volume_id
         else:
-            return False, ''
+            return ''
 
 
     def create_snapshot(self, volume_id):
         """
         Create the snapshot out of the volume created
         """
+        log.info('Taking a snapshot of the written volume')
+
         SNAPSHOT_NAME = 'fedimg-snap-{build_name}'.format(
             build_name=self.build_name)
 
-        log.info('Taking a snapshot of the written volume')
+        # Take a snapshot of the volume the image was written to
+        self.util_volume = [v for v in self.driver.list_volumes()
+                            if v.id == volume_id][0]
 
-        self.snapshot = driver.create_volume_snapshot(volume, name=snap_name)
+        self.snapshot = self.driver.create_volume_snapshot(self.util_volume,
+                                                           name=snap_name)
+
+        return self._check_snapshot_exists(str(self.snapshot.id))
 
 
     @retry(retry_on_result=retry_if_result_false, wait_fixed=10000)
