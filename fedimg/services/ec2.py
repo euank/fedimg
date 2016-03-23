@@ -32,6 +32,7 @@ from libcloud.compute.deployment import ScriptDeployment, SSHKeyDeployment
 from libcloud.compute.providers import get_driver
 from libcloud.compute.types import DeploymentException
 from libcloud.compute.types import KeyPairDoesNotExistError
+from retrying import retry
 
 import fedimg
 import fedimg.messenger
@@ -66,8 +67,8 @@ class EC2Service(object):
         self.raw_url = raw_url
         self.virt_type = virt_type
         self.vol_type = vol_type
-        # All of these are set to appropriate values throughout
-        # the upload process.
+
+        # All of these are set to appropriate values throughout the upload process.
         self.util_node = None
         self.util_volume = None
         self.images = []
