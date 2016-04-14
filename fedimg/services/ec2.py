@@ -21,7 +21,7 @@
 #
 
 import logging
-log = logging.getLogger("fedmsg")
+import os
 
 from time import sleep
 
@@ -41,6 +41,7 @@ from fedimg.util import region_to_driver, ssh_connection_works
 from fedimg.util import run_system_command, check_if_volume_exists
 from fedimg.util import retry_if_result_false
 
+log = logging.getLogger("fedmsg")
 
 class EC2ServiceException(Exception):
     """ Custom exception for EC2Service. """
@@ -578,7 +579,7 @@ class EC2Service(object):
         :param region: Region (optional)
         :type region: ``str``
         """
-        availabilty_zone = self.driver.ex_list_availability_zone(only_available=True)
+        availabilty_zone = self.driver.ex_list_availability_zones(only_available=True)
 
         return availabilty_zone[0]
 
@@ -590,7 +591,8 @@ class EC2Service(object):
         :param image_url: URL of the image
         :type image_url: ``str``
         """
-        cmd = "curl -L {image_url}".format(image_url=image_url)
+        cmd = "wget {image_url} -P {location}".format(image_url=image_url,
+                                                      location=os.environ['HOME'])
         out, err = run_system_command(cmd)
 
         return out, err
@@ -614,13 +616,14 @@ class EC2Service(object):
         :type availability_zone: ``str``
         """
         params = {
+            'location': os.environ['HOME'],
             'image_name': image_name,
             'image_format': image_format,
             'region': region,
             'bucket_name': bucket_name,
             'availability_zone': availability_zone,
         }
-        cmd = 'euca-import-volume {image_name} -f {image_format} --region \
+        cmd = 'euca-import-volume {location}/{image_name} -f {image_format} --region \
                {region} -b {bucket_name} -z {availability_zone}'.format(**params)
 
         out, err = run_system_command(cmd)
