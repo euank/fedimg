@@ -599,7 +599,7 @@ class EC2Service(object):
 
 
     def _import_image_volume(self, image_name, image_format, region, bucket_name,
-                             availability_zone, volume_type, volume_size):
+                             availability_zone):
         """
         Executes the command ``euca-import-volume`` and imports a volume in AWS
 
