@@ -211,7 +211,7 @@ class EC2Service(object):
 
             volume_id = self._describe_conversion_tasks(task_id, region)
 
-            create_snapshot(volume_id)
+            self.create_snapshot(volume_id)
 
             # Make the snapshot public, so that the AMIs can be copied
             self.driver.ex_modify_snapshot_attribute(self.snapshot, {
