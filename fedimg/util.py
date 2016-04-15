@@ -140,4 +140,4 @@ def retry_if_result_false(result):
     """
     Return True if we should retry if the result if False
     """
-    return bool(result)
+    return not bool(result)
