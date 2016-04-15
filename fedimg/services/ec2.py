@@ -631,6 +631,8 @@ class EC2Service(object):
 
         out, err = run_system_command(cmd)
 
+        return out, err
+
     def match_regex_pattern(regex, output):
         """
         Returns the taskid from the output
