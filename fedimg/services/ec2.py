@@ -206,6 +206,9 @@ class EC2Service(object):
             }
             out, err = self._import_image_volume(**params)
 
+            task_id = self.match_regex_pattern(regex='\s(import-vol-\w{8})',
+                                               outout=out)
+
             volume_id = self._describe_conversion_tasks(task_id, region)
 
             # Make the snapshot public, so that the AMIs can be copied
@@ -628,6 +631,20 @@ class EC2Service(object):
 
         out, err = run_system_command(cmd)
 
+    def match_regex_pattern(regex, output):
+        """
+        Returns the taskid from the output
+        :param regex: regex pattern
+        :type regex: ``str``
+
+        :param output: output in which the pattern would be searched
+        :type output: ``str``
+        """
+        match = re.search(regex, output)
+        if match is None:
+            return ''
+        else:
+            return match.group(1)
 
     @retry(retry_on_result=retry_if_result_false, wait_fixed=5000)
     def _describe_conversion_tasks(self, task_id, region):
