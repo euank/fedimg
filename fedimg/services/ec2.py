@@ -70,8 +70,7 @@ class EC2Service(object):
         self.vol_type = vol_type
 
         # All of these are set to appropriate values throughout the upload process.
-        self.util_node = None
-        self.util_volume = None
+        self.volume = None
         self.images = []
         self.snapshot = None
         self.test_node = None
@@ -191,11 +190,11 @@ class EC2Service(object):
             # Name the utility node
             name = 'Fedimg AMI builder'
 
-            log.info('Start downloading the image')
+            log.info('Start to download the image')
             out, err = self._download_image(self.raw_url)
 
             bucket_name = 'fedora-test-{region}'.format(region=region)
-            availability_zone = self._get_availability_zone()
+            availability_zone = self.get_availability_zone()
 
             params = {
                 'image_name': self.file_name,
@@ -204,13 +203,11 @@ class EC2Service(object):
                 'bucket_name': bucket_name,
                 'availability_zone': availability_zone.name,
             }
-            out, err = self._import_image_volume(**params)
-
+            out, err = self.import_image_volume(**params)
             task_id = self.match_regex_pattern(regex='\s(import-vol-\w{8})',
                                                outout=out)
 
             volume_id = self._describe_conversion_tasks(task_id, region)
-
             self.create_snapshot(volume_id)
 
             # Make the snapshot public, so that the AMIs can be copied
@@ -221,10 +218,11 @@ class EC2Service(object):
             log.info('Snapshot taken')
 
             # Delete the volume now that we've got the snapshot
-            self.driver.destroy_volume(self.util_volume)
+            log.info('Destroying the volume: %s' % volume_id)
+            self.driver.destroy_volume(self.volume)
 
             # Make sure Fedimg knows that the vol is gone
-            self.util_volume = None
+            self.volume = None
 
             log.info('Destroyed volume')
 
@@ -251,41 +249,21 @@ class EC2Service(object):
 
             # For this block device mapping, we have our volume be
             # based on the snapshot's ID
-            mapping = [{'DeviceName': reg_root_device_name,
-                        'Ebs': {'SnapshotId': snap_id,
-                                'VolumeSize': fedimg.AWS_TEST_VOL_SIZE,
-                                'VolumeType': self.vol_type,
-                                'DeleteOnTermination': 'true'}}]
+            mapping = [{
+                'DeviceName': reg_root_device_name,
+                'Ebs': {
+                    'SnapshotId': snap_id,
+                    'VolumeSize': fedimg.AWS_TEST_VOL_SIZE,
+                    'VolumeType': self.vol_type,
+                    'DeleteOnTermination': 'true'
+                }
+            }]
 
-            # Avoid duplicate image name by incrementing the number at the
-            # end of the image name if there is already an AMI with that name.
-            # TODO: This process could be written nicer.
-            while True:
-                try:
-                    if self.dup_count > 0:
-                        # Remove trailing '-0' or '-1' or '-2' or...
-                        image_name = '-'.join(image_name.split('-')[:-1])
-                        # Re-add trailing dup number with new count
-                        image_name += '-{0}'.format(self.dup_count)
-                    # Try to register with that name
-                    self.images.append(self.driver.ex_register_image(
-                        image_name,
-                        description=self.image_desc,
-                        root_device_name=reg_root_device_name,
-                        block_device_mapping=mapping,
-                        virtualization_type=self.virt_type,
-                        kernel_id=registration_aki,
-                        architecture=self.image_arch))
-                except Exception as e:
-                    # Check if the problem was a duplicate name
-                    if 'InvalidAMIName.Duplicate' in str(e):
-                        # Keep trying until an unused name is found
-                        self.dup_count += 1
-                        continue
-                    else:
-                        raise
-                break
-
+            log.info('Start image registration')
+            self.register_image(image_name,
+                                reg_root_device_name,
+                                mapping,
+                                registration_aki)
             log.info('Completed image registration')
 
             # Emit success fedmsg
@@ -577,19 +555,58 @@ class EC2Service(object):
             return 0
 
 
-    def _get_availability_zone(self, region=None):
+    def create_snapshot(self, volume_id):
         """
-        Returns a availability zone for the region
+        Create the snapshot out of the volume created
 
-        :param region: Region (optional)
+        :param volume_id: Volume id
+        :type volume_id: ``str``
+        """
+
+        SNAPSHOT_NAME = 'fedimg-snap-{build_name}'.format(
+            build_name=self.build_name)
+
+        log.info('Taking a snapshot of the volume: %s' % volume_id)
+        # Take a snapshot of the volume the image was written to
+        self.volume = [v for v in self.driver.list_volumes()
+                       if v.id == volume_id][0]
+
+        self.snapshot = self.driver.create_volume_snapshot(self.volume,
+                                                           name=SNAPSHOT_NAME)
+
+        return self._check_snapshot_exists(str(self.snapshot.id))
+
+    @retry(retry_on_result=retry_if_result_false, wait_fixed=5000)
+    def describe_conversion_tasks(self, task_id, region):
+        """
+        Executes the command ``euca-describe-conversion-tasks`` and checks if
+        the task has been completed.
+
+        :param task_id: Task id
+        :type task_id: ``str``
+
+        :param region: Region
         :type region: ``str``
         """
-        availabilty_zone = self.driver.ex_list_availability_zones(only_available=True)
+        params = {
+            'task_id': task_id,
+            'region': region
+        }
+        CMD = 'euca-describe-conversion-tasks {task_id} --region {region}'
 
-        return availabilty_zone[0]
+        log.info('Retreiving information for task_id: %s' % task_id)
+        cmd = CMD.format(**params)
+        out, err = run_system_command(cmd)
 
+        if 'completed' in out:
+            match = re.search('\s(vol-\w{8})', out)
+            volume_id = match.group(1)
+            log.info('Volume Created: %s' % volume_id)
+            return volume_id
+        else:
+            return ''
 
-    def _download_image(self, image_url):
+    def download_image(self, image_url):
         """
         Downloads the raw image for the image to be uploaded to all the regions.
 
@@ -602,9 +619,16 @@ class EC2Service(object):
 
         return out, err
 
+    def get_availability_zone(self):
+        """
+        Returns a availability zone for the region
+        """
+        availabilty_zone = self.driver.ex_list_availability_zones(only_available=True)
 
-    def _import_image_volume(self, image_name, image_format, region, bucket_name,
-                             availability_zone):
+        return availabilty_zone[0]
+
+    def import_image_volume(self, image_name, image_format, region, bucket_name,
+                            availability_zone):
         """
         Executes the command ``euca-import-volume`` and imports a volume in AWS
 
@@ -650,53 +674,52 @@ class EC2Service(object):
         else:
             return match.group(1)
 
-    @retry(retry_on_result=retry_if_result_false, wait_fixed=5000)
-    def _describe_conversion_tasks(self, task_id, region):
+    def register_image(image_name, reg_root_device_name, blk_device_mapping,
+                       registration_aki):
         """
-        Executes the command ``euca-describe-conversion-tasks`` and checks if
-        the task has been completed.
+        Registers an AMI using the snapshot created.
 
-        :param task_id: Task id
-        :type task_id: ``str``
+        :param image_name: Name of the image
+        :type regex: ``str``
 
-        :param region: Region
-        :type region: ``str``
+        :param reg_root_device_name: Root Device Name
+        :type regex: ``str``
+
+        :param blk_device_mapping: Block Device mapping
+        :type regex: ``str``
+
+        :param registration_aki: Registration AKI
+        :type regex: ``str``
         """
-        params = {
-            'task_id': task_id,
-            'region': region
-        }
-        cmd = 'euca-describe-conversion-tasks {task_id}\
-               --region {region}'.format(**params)
-
-        out, err = run_system_command(cmd)
-
-        if 'completed' in out:
-            match = re.search('\s(vol-\w{8})', out)
-            volume_id = match.group(1)
-            return volume_id
-        else:
-            return ''
-
-
-    def create_snapshot(self, volume_id):
-        """
-        Create the snapshot out of the volume created
-        """
-        log.info('Taking a snapshot of the written volume')
-
-        SNAPSHOT_NAME = 'fedimg-snap-{build_name}'.format(
-            build_name=self.build_name)
-
-        # Take a snapshot of the volume the image was written to
-        self.util_volume = [v for v in self.driver.list_volumes()
-                            if v.id == volume_id][0]
-
-        self.snapshot = self.driver.create_volume_snapshot(self.util_volume,
-                                                           name=SNAPSHOT_NAME)
-
-        return self._check_snapshot_exists(str(self.snapshot.id))
-
+        #TODO: Conver this method from `while` loop to @retry
+        # Avoid duplicate image name by incrementing the number at the
+        # end of the image name if there is already an AMI with that name.
+        cnt = 0
+        while True:
+            if cnt > 0:
+                image_name = re.sub('\d(?!\d)',
+                      lambda x: str(int(x.group(0)) + 1),
+                      image_name)
+            try:
+                self.image.append(
+                    self.driver.ex_register_image(
+                        name=image_name,
+                        description=self.image_description,
+                        root_device_name=root_device_name,
+                        block_device_mapping=blk_device_mapping,
+                        virtualization_type=self.virt_type,
+                        kernel_id=registration_aki,
+                        architecture=self.image_arch
+                    )
+                )
+                break
+            except Exception as e:
+                if 'InvalidAMIName.Duplicate' in e.message:
+                    log.debug('AMI %s exists. Retying again' % image_name)
+                    cnt += 1
+                else:
+                    raise
+        return
 
     @retry(retry_on_result=retry_if_result_false, wait_fixed=10000)
     def _check_snapshot_exists(self, snapshot_id):
@@ -710,25 +733,6 @@ class EC2Service(object):
             self.snapshot = [snapshot for snapshot in self.driver.list_snapshots()
                              if snapshot.id == snapshot_id][0]
             log.info('Snapshot Taken')
-
             return True
         else:
             return False
-
-
-    def _check_volume_exists(self, volume_id, region):
-        """
-        Checks if the volume has been created.
-
-        Apache libcloud pulls in all the volumes and does not have an option to
-        query a single volume by it's volume id.
-
-        So, the plan is to use boto in here to do the query
-
-        :param volume_id: Id of the Volume
-        :type volume_id: ``str``
-
-        :param region: Region of the volume
-        :type region: ``str``
-        """
-        return check_if_volume_exists(volume_id)
