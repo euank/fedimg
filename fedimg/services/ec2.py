@@ -38,7 +38,7 @@ import fedimg
 import fedimg.messenger
 from fedimg.util import get_file_arch
 from fedimg.util import region_to_driver, ssh_connection_works
-from fedimg.util import run_system_command, check_if_volume_exists
+from fedimg.util import run_system_command
 from fedimg.util import retry_if_result_false
 
 log = logging.getLogger("fedmsg")
@@ -191,7 +191,7 @@ class EC2Service(object):
             name = 'Fedimg AMI builder'
 
             log.info('Start to download the image')
-            out, err = self._download_image(self.raw_url)
+            out, err = self.download_image(self.raw_url)
 
             bucket_name = 'fedora-test-{region}'.format(region=region)
             availability_zone = self.get_availability_zone()
@@ -207,7 +207,7 @@ class EC2Service(object):
             task_id = self.match_regex_pattern(regex='\s(import-vol-\w{8})',
                                                outout=out)
 
-            volume_id = self._describe_conversion_tasks(task_id, region)
+            volume_id = self.describe_conversion_tasks(task_id, region)
             self.create_snapshot(volume_id)
 
             # Make the snapshot public, so that the AMIs can be copied
