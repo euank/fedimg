@@ -205,7 +205,7 @@ class EC2Service(object):
             }
             out, err = self.import_image_volume(**params)
             task_id = self.match_regex_pattern(regex='\s(import-vol-\w{8})',
-                                               outout=out)
+                                               output=out)
 
             volume_id = self.describe_conversion_tasks(task_id, region)
             self.create_snapshot(volume_id)
@@ -252,7 +252,7 @@ class EC2Service(object):
             mapping = [{
                 'DeviceName': reg_root_device_name,
                 'Ebs': {
-                    'SnapshotId': snap_id,
+                    'SnapshotId': self.snapshot.id,
                     'VolumeSize': fedimg.AWS_TEST_VOL_SIZE,
                     'VolumeType': self.vol_type,
                     'DeleteOnTermination': 'true'
@@ -671,7 +671,7 @@ class EC2Service(object):
         else:
             return match.group(1)
 
-    def register_image(image_name, reg_root_device_name, blk_device_mapping,
+    def register_image(self, image_name, reg_root_device_name, blk_device_mapping,
                        registration_aki):
         """
         Registers an AMI using the snapshot created.
@@ -698,11 +698,11 @@ class EC2Service(object):
                       lambda x: str(int(x.group(0)) + 1),
                       image_name)
             try:
-                self.image.append(
+                self.images.append(
                     self.driver.ex_register_image(
                         name=image_name,
                         description=self.image_description,
-                        root_device_name=root_device_name,
+                        root_device_name=reg_root_device_name,
                         block_device_mapping=blk_device_mapping,
                         virtualization_type=self.virt_type,
                         kernel_id=registration_aki,
@@ -729,7 +729,7 @@ class EC2Service(object):
         if self.snapshot.extra['state'] != 'completed':
             self.snapshot = [snapshot for snapshot in self.driver.list_snapshots()
                              if snapshot.id == snapshot_id][0]
+            return False
+        else:
             log.info('Snapshot Taken')
             return True
-        else:
-            return False
