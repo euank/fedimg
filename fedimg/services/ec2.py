@@ -22,6 +22,7 @@
 
 import logging
 import os
+import re
 
 from time import sleep
 
@@ -276,6 +277,13 @@ class EC2Service(object):
                                          compose=compose_meta)
 
             # Now, we'll spin up a node of the AMI to test:
+
+            # Read in the SSH key
+            with open(fedimg.AWS_PUBKEYPATH, 'rb') as f:
+                key_content = f.read()
+
+            # Add key to authorized keys for root user
+            step_1 = SSHKeyDeployment(key_content)
 
             # Add script for deployment
             # Device becomes /dev/xvdb on instance
@@ -701,7 +709,7 @@ class EC2Service(object):
                 self.images.append(
                     self.driver.ex_register_image(
                         name=image_name,
-                        description=self.image_description,
+                        description=self.image_desc,
                         root_device_name=reg_root_device_name,
                         block_device_mapping=blk_device_mapping,
                         virtualization_type=self.virt_type,
