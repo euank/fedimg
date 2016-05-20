@@ -298,6 +298,8 @@ class EC2Service(object):
             # Pick a name for the test instance
             name = 'Fedimg AMI tester'
 
+            sizes = self.driver.list_sizes()
+
             # Select the appropriate size for the instance
             size = [s for s in sizes if s.id == test_size_id][0]
 
