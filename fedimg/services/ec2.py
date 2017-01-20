@@ -71,7 +71,7 @@ class EC2Service(object):
         # All of these are set to appropriate values
         # throughout the upload process.
         self.volume = None
-        self.images = []
+        self.image = None
         self.snapshot = None
 
         regions = fedimg.AWS_REGIONS.split('|')
@@ -89,29 +89,12 @@ class EC2Service(object):
     def _clean_up(self, driver, delete_images=False):
         """ Cleans up resources via a libcloud driver. """
         log.info('Cleaning up resources')
-        if delete_images and len(self.images) > 0:
-            for image in self.images:
-                driver.delete_image(image)
+        if delete_images and self.image is not None:
+            driver.delete_image(self.image)
 
-        if self.snapshot and len(self.images) == 0:
+        if self.snapshot and self.image is not None:
             driver.destroy_volume_snapshot(self.snapshot)
             self.snapshot = None
-
-        if self.util_node:
-            driver.destroy_node(self.util_node)
-            # Wait for node to be terminated
-            while ssh_connection_works(fedimg.AWS_UTIL_USER,
-                                       self.util_node.public_ips[0],
-                                       fedimg.AWS_KEYPATH):
-                sleep(10)
-            self.util_node = None
-        if self.util_volume:
-            # Destroy /dev/sdb or whatever
-            driver.destroy_volume(self.util_volume)
-            self.util_volume = None
-        if self.test_node:
-            driver.destroy_node(self.test_node)
-            self.test_node = None
 
     def upload(self, compose_meta):
         """ Registers the image in each EC2 region. """
@@ -344,15 +327,13 @@ class EC2Service(object):
                       lambda x: str(int(x.group(0)) + 1),
                       image_name)
             try:
-                self.images.append(
-                    self.driver.ex_register_image(
-                        name=image_name,
-                        description=self.image_desc,
-                        root_device_name=reg_root_device_name,
-                        block_device_mapping=blk_device_mapping,
-                        virtualization_type=self.virt_type,
-                        architecture=self.image_arch
-                    )
+                self.image = self.driver.ex_register_image(
+                    name=image_name,
+                    description=self.image_desc,
+                    root_device_name=reg_root_device_name,
+                    block_device_mapping=blk_device_mapping,
+                    virtualization_type=self.virt_type,
+                    architecture=self.image_arch
                 )
                 break
             except Exception as e:
