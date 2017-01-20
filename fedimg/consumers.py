@@ -19,9 +19,6 @@
 # Authors:  David Gay <dgay@redhat.com>
 #
 
-import logging
-log = logging.getLogger("fedmsg")
-
 import multiprocessing.pool
 
 import fedmsg.consumers
@@ -30,6 +27,9 @@ import fedfind.release
 
 import fedimg.uploader
 from fedimg.util import get_rawxz_urls, safeget
+
+import logging
+log = logging.getLogger("fedmsg")
 
 
 class FedimgConsumer(fedmsg.consumers.FedmsgConsumer):

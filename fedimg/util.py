@@ -32,8 +32,6 @@ import paramiko
 from libcloud.compute.types import Provider
 from libcloud.compute.providers import get_driver
 
-import fedimg
-
 
 def get_file_arch(file_name):
     """ Takes a file name (probably of a .raw.xz image file) and returns
