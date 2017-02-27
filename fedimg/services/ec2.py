@@ -1,5 +1,5 @@
 # This file is part of fedimg.
-# Copyright (C) 2014-2015 Red Hat, Inc.
+# Copyright (C) 2014-17 Red Hat, Inc.
 #
 # fedimg is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -21,26 +21,18 @@
 #           Sayan Chowdhury <sayanchowdhury@fedoraproject.org>
 
 import logging
-import os
 import re
-import tempfile
 
-from time import sleep
-
-import paramiko
-from libcloud.compute.deployment import MultiStepDeployment
-from libcloud.compute.deployment import ScriptDeployment, SSHKeyDeployment
-from libcloud.compute.types import DeploymentException
 from retrying import retry
 
 import fedimg
 import fedimg.messenger
-from fedimg.util import get_file_arch
-from fedimg.util import region_to_driver, ssh_connection_works
+
+from fedimg.util import get_file_arch, region_to_driver, retry_if_result_false
 from fedimg.util import run_system_command
-from fedimg.util import retry_if_result_false
 
 log = logging.getLogger("fedmsg")
+
 
 class EC2ServiceException(Exception):
     """ Custom exception for EC2Service. """
@@ -62,11 +54,14 @@ class EC2Service(object):
     """ An object for interacting with an EC2 upload process.
         Takes a URL to a raw.xz image. """
 
-    def __init__(self, raw_url, virt_type='hvm', vol_type='standard'):
+    def __init__(self, raw_url, cwd, virt_type='hvm', vol_type='standard'):
 
         self.raw_url = raw_url
         self.virt_type = virt_type
         self.vol_type = vol_type
+
+        # Location of the downloaded image file
+        self.cwd = cwd
 
         # All of these are set to appropriate values
         # throughout the upload process.
@@ -76,8 +71,8 @@ class EC2Service(object):
 
         regions = fedimg.AWS_REGIONS.split('|')
 
-        # `util_region` is the region where the first AMI is created
-        self.util_region = regions[0]
+        # `region` is the region where the first AMI is created
+        self.region = regions[0]
 
         # Get file name, build name, a description, and the image arch
         # all from the .raw.xz file name.
@@ -89,6 +84,7 @@ class EC2Service(object):
     def _clean_up(self, driver, delete_images=False):
         """ Cleans up resources via a libcloud driver. """
         log.info('Cleaning up resources')
+
         if delete_images and self.image is not None:
             driver.delete_image(self.image)
 
@@ -110,9 +106,6 @@ class EC2Service(object):
 
         cls = region_to_driver(region)
         self.driver = cls(fedimg.AWS_ACCESS_ID, fedimg.AWS_SECRET_KEY)
-
-        log.info('Start to download the image')
-        out, err = self.download_image(self.raw_url)
 
         bucket_name = '{bucket_name}-{region}'.format(
             bucket_name=fedimg.AWS_BUCKET_NAME,
@@ -155,7 +148,7 @@ class EC2Service(object):
         else:  # HVM
             image_name = "{0}-{1}-HVM-{2}-0".format(
                 self.build_name,
-                'region',
+                region,
                 self.vol_type
             )
             reg_root_device_name = '/dev/sda1'
@@ -227,7 +220,7 @@ class EC2Service(object):
         out, err = run_system_command(cmd)
 
         if 'completed' in out:
-            match = re.search('\s(vol-\w{8})', out)
+            match = re.search('\s(vol-\w{17})', out)
             volume_id = match.group(1)
             log.info('Volume Created: %s' % volume_id)
             return volume_id
@@ -241,9 +234,8 @@ class EC2Service(object):
         :param image_url: URL of the image
         :type image_url: ``str``
         """
-        self.tmpdir = tempfile.mkdtemp()
         cmd = "wget {image_url} -P {location}".format(image_url=image_url,
-                                                      location=self.tmpdir)
+                                                      location=self.cwd)
         out, err = run_system_command(cmd)
 
         return out, err
@@ -252,12 +244,12 @@ class EC2Service(object):
         """
         Returns a availability zone for the region
         """
-        availabilty_zone = self.driver.ex_list_availability_zones(only_available=True)
-
+        availabilty_zone = self.driver.ex_list_availability_zones(
+                only_available=True)
         return availabilty_zone[0]
 
-    def import_image_volume(self, image_name, image_format, region, bucket_name,
-                            availability_zone):
+    def import_image_volume(self, image_name, image_format, region,
+                            bucket_name, availability_zone):
         """
         Executes the command ``euca-import-volume`` and imports a volume in AWS
 
@@ -274,7 +266,7 @@ class EC2Service(object):
         :type availability_zone: ``str``
         """
         params = {
-            'location': os.environ['HOME'],
+            'location': self.cwd,
             'image_name': image_name,
             'image_format': image_format,
             'region': region,
@@ -323,9 +315,10 @@ class EC2Service(object):
         cnt = 0
         while True:
             if cnt > 0:
-                image_name = re.sub('\d(?!\d)',
-                      lambda x: str(int(x.group(0)) + 1),
-                      image_name)
+                image_name = re.sub(
+                    '\d(?!\d)',
+                    lambda x: str(int(x.group(0)) + 1),
+                    image_name)
             try:
                 self.image = self.driver.ex_register_image(
                     name=image_name,
@@ -353,7 +346,8 @@ class EC2Service(object):
         :type snapshot_id: ``str``
         """
         if self.snapshot.extra['state'] != 'completed':
-            self.snapshot = [snapshot for snapshot in self.driver.list_snapshots()
+            self.snapshot = [snapshot
+                             for snapshot in self.driver.list_snapshots()
                              if snapshot.id == snapshot_id][0]
             return False
         else:

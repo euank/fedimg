@@ -1,5 +1,5 @@
 # This file is part of fedimg.
-# Copyright (C) 2014 Red Hat, Inc.
+# Copyright (C) 2014-17 Red Hat, Inc.
 #
 # fedimg is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -17,13 +17,30 @@
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 #
 # Authors:  David Gay <dgay@redhat.com>
-#
+#           Sayan Chowdhury <sayanchowdhury@fedoraproject.org>
+
+import shutil
+import tempfile
+
+from fedimg.services.ec2 import EC2Service
+from fedimg.util import virt_types_from_url, run_system_command
 
 import logging
 log = logging.getLogger("fedmsg")
 
-from fedimg.services.ec2 import EC2Service
-from fedimg.util import virt_types_from_url
+
+def download_image(image_url, cwd):
+    """
+    Downloads the raw image for the image to be uploaded to all the regions.
+
+    :param image_url: URL of the image
+    :type image_url: ``str``
+    """
+    cmd = "wget {image_url} -P {location}".format(image_url=image_url,
+                                                  location=cwd)
+    out, err = run_system_command(cmd)
+
+    return out, err
 
 
 def upload(pool, urls, compose_meta):
@@ -35,13 +52,22 @@ def upload(pool, urls, compose_meta):
 
     services = []
 
+    tmpdir = tempfile.mkdtemp()
+    log.info(" Preparing temporary directory for download: %s" % tmpdir)
+
     for url in urls:
+        # Downloading the images in the tmp directory
+        out, err = download_image(url, tmpdir)
+
         # EC2 upload
         log.info("  Preparing to upload %r" % url)
         for vt in virt_types_from_url(url):
-            services.append(EC2Service(url, virt_type=vt,
+            services.append(EC2Service(url, tmpdir, virt_type=vt,
                                        vol_type='standard'))
-            services.append(EC2Service(url, virt_type=vt,
+            services.append(EC2Service(url, tmpdir, virt_type=vt,
                                        vol_type='gp2'))
 
-    results = pool.map(lambda s: s.upload(compose_meta), services)
+    pool.map(lambda s: s.upload(compose_meta), services)
+
+    log.info(" Cleaning up tmp directories: %s" % tmpdir)
+    shutil.rmtree(tmpdir)
