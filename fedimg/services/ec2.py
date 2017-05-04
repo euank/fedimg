@@ -127,6 +127,11 @@ class EC2Service(object):
         volume_id = self.describe_conversion_tasks(task_id, region)
         self.create_snapshot(volume_id)
 
+        # Make the snapshot public, so that the AMIs can be copied
+        self.driver.ex_modify_snapshot_attribute(self.snapshot, {
+            'CreateVolumePermission.Add.1.Group': 'all'
+        })
+
         # Delete the volume now that we've got the snapshot
         log.info('Destroying the volume: %s' % volume_id)
         self.driver.destroy_volume(self.volume)
@@ -165,16 +170,19 @@ class EC2Service(object):
             }
         }]
 
-        log.info('Start image registration')
+        log.info('Start AMI registration')
         self.register_image(image_name, reg_root_device_name, mapping)
-        log.info('Completed image registration')
+        log.info('AMI registration complete')
 
-        fedimg.messenger.message('image.create', self.raw_url,
-                                 self.destination, 'created', compose_meta,
-                                 extra={'id': self.image.id,
-                                        'virt_type': self.virt_type,
-                                        'vol_type': self.vol_type,
-                                        'region': region})
+        fedimg.messenger.message(
+            'image.create', self.raw_url, self.destination, 'created',
+            compose_meta, extra={
+                'id': self.image.id,
+                'virt_type': self.virt_type,
+                'vol_type': self.vol_type,
+                'region': region
+            }
+        )
 
     def create_snapshot(self, volume_id):
         """
@@ -330,7 +338,7 @@ class EC2Service(object):
                 )
                 break
             except Exception as e:
-                if 'InvalidAMIName.Duplicate' in e.message:
+                if 'InvalidAMIName.Duplicate' in str(e):
                     log.debug('AMI %s exists. Retying again' % image_name)
                     cnt += 1
                 else:
