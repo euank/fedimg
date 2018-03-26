@@ -90,6 +90,16 @@ class EC2ImageUploader(EC2Base):
 
         return root_device_name
 
+    def _determine_ena_support(self):
+        ena = False
+        if self.image_virtualization_type == 'hvm':
+            ena = True
+
+        log.debug('ENA support set to %r for %r' % (
+            ena, self.image_virtualization_type))
+
+        return ena
+
     def _create_block_device_map(self, snapshot):
         root_device_name = self._determine_root_device_name()
         block_device_map = {
@@ -185,6 +195,7 @@ class EC2ImageUploader(EC2Base):
         counter = 0
         block_device_map = self._create_block_device_map(snapshot)
         root_device_name = self._determine_root_device_name()
+        ena_support = self._determine_ena_support()
         while True:
             if counter > 0:
                 self.image_name = re.sub('\d(?!\d)$',
@@ -201,7 +212,7 @@ class EC2ImageUploader(EC2Base):
                     architecture=self.image_architecture,
                     block_device_mapping=block_device_map,
                     root_device_name=root_device_name,
-                    ena_support=True
+                    ena_support=ena_support
                 )
 
                 if self.push_notifications:
